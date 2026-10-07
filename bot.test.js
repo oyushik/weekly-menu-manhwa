@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   BOARD_URL, findNewPosts, parseListing, parsePost, readState, request,
-  run, saveState, sendImage, webhookUrl,
+  run, saveState, sendImages, webhookUrl,
 } from './bot.js';
 
 const TITLE = '(1)한국만화영상진흥원 주간식단표(10/5~10/11)';
@@ -58,44 +58,68 @@ test('오래된 고정 글이 있어도 다음 페이지의 새 글을 찾아 �
   await assert.rejects(findNewPosts('1', async () => pages[0]), /페이지가 반복/);
 });
 
-test('첫 실행은 최신 한 건, 재실행은 무전송, 이후 새 글은 순서대로 전송', async (t) => {
+test('게시글의 이미지 2장을 메시지 하나로 전송, 재실행은 무전송, 이후 새 글은 순서대로 전송', async (t) => {
   const stateFile = await tempState(t);
   let rows = [[30], [20]];
   const sent = [];
   const options = {
     stateFile, webhook: WEBHOOK, getImage, log,
     getHtml: async (url) => new URL(url).searchParams.has('idx') ? detail() : listing(rows),
-    send: async (_, post, index) => sent.push(`${post.id}:${index}`),
+    send: async (_, post, images) => sent.push({ id: post.id, count: images.length }),
   };
   await run(options);
-  assert.deepEqual(sent, ['30:0', '30:1']);
+  assert.deepEqual(sent, [{ id: '30', count: 2 }]);
   await run(options);
-  assert.equal(sent.length, 2);
+  assert.equal(sent.length, 1);
   rows = [[50], [40], [30], [20]];
   await run(options);
-  assert.deepEqual(sent, ['30:0', '30:1', '40:0', '40:1', '50:0', '50:1']);
+  assert.deepEqual(sent, [{ id: '30', count: 2 }, { id: '40', count: 2 }, { id: '50', count: 2 }]);
   assert.equal((await readState(stateFile)).lastPostId, '50');
 });
 
-test('전송 실패 시 완료된 이미지만 기록하고 다음 실행에서 이어 전송', async (t) => {
+test('두 번째 이미지 다운로드 또는 메시지 전송이 실패하면 완료 처리 없이 전체 재시도', async (t) => {
   const stateFile = await tempState(t);
   const sent = [];
-  let fail = true;
+  let failure = 'download';
   const options = {
-    stateFile, webhook: WEBHOOK, getImage, log,
+    stateFile, webhook: WEBHOOK, log,
+    getImage: async (url) => {
+      if (url === imageUrl('b') && failure === 'download') throw new Error('Image unavailable');
+      return image;
+    },
     getHtml: async (url) => new URL(url).searchParams.has('idx') ? detail() : listing([[30], [20]]),
-    send: async (_, post, index) => {
-      if (index === 1 && fail) throw new Error('Discord unavailable');
-      sent.push(index);
+    send: async (_, post, images) => {
+      if (failure === 'send') throw new Error('Discord unavailable');
+      sent.push(images.length);
     },
   };
-  await assert.rejects(run(options), /Discord unavailable/);
+  await assert.rejects(run(options), /Image unavailable/);
+  assert.deepEqual(sent, []);
   assert.deepEqual(await readState(stateFile), {
-    version: 1, lastPostId: '29', pending: { postId: '30', sentImages: [imageUrl('a')] },
+    version: 1, lastPostId: '29', pending: { postId: '30', sentImages: [] },
   });
-  fail = false;
+  failure = 'send';
+  await assert.rejects(run(options), /Discord unavailable/);
+  assert.equal((await readState(stateFile)).lastPostId, '29');
+  failure = null;
   await run(options);
-  assert.deepEqual(sent, [0, 1]);
+  assert.deepEqual(sent, [2]);
+  assert.deepEqual(await readState(stateFile), { version: 1, lastPostId: '30', pending: null });
+});
+
+test('이전 버전에서 전송한 이미지 기록을 유지하고 미전송 이미지만 묶어 전송', async (t) => {
+  const stateFile = await tempState(t);
+  await saveState(stateFile, { version: 1, lastPostId: '29', pending: { postId: '30', sentImages: [imageUrl('a')] } });
+  const downloaded = [];
+  const sent = [];
+  await run({
+    stateFile, webhook: WEBHOOK, log,
+    getHtml: async (url) => new URL(url).searchParams.has('idx') ? detail(['a', 'b', 'c']) : listing([[30]]),
+    getImage: async (url) => { downloaded.push(url); return image; },
+    send: async (_, post, images) => sent.push(images.length),
+  });
+  assert.deepEqual(downloaded, [imageUrl('b'), imageUrl('c')]);
+  assert.deepEqual(sent, [2]);
   assert.deepEqual(await readState(stateFile), { version: 1, lastPostId: '30', pending: null });
 });
 
@@ -134,14 +158,26 @@ test('Discord 요청: 원본 첨부, wait=true, 멘션 차단, 429 대기, 실�
   assert.equal(destination.searchParams.get('wait'), 'true');
   assert.equal(destination.searchParams.get('thread_id'), '456');
   assert.throws(() => webhookUrl('https://discord.com.evil.test/api/webhooks/123/secret'), /설정하세요/);
-  const post = { id: '30', title: TITLE, url: `${BOARD_URL}?bmode=view&idx=30`, images: [imageUrl('a')] };
-  await sendImage(destination, post, 0, image, async (_, options) => {
+  const post = { id: '30', title: TITLE, url: `${BOARD_URL}?bmode=view&idx=30`, images: [imageUrl('a'), imageUrl('b')] };
+  let sends = 0;
+  const second = { blob: new Blob(['second'], { type: 'image/png' }), extension: 'png' };
+  await sendImages(destination, post, [image, second], async (_, options) => {
+    sends++;
     const payload = JSON.parse(options.body.get('payload_json'));
     assert.deepEqual(payload.allowed_mentions, { parse: [] });
+    assert.deepEqual(payload.attachments, [{ id: 0, filename: 'menu-30-1.jpg' }, { id: 1, filename: 'menu-30-2.png' }]);
+    assert.match(payload.content, /식단표 2장/);
     assert.equal(options.body.get('files[0]').name, 'menu-30-1.jpg');
     assert.equal(await options.body.get('files[0]').text(), 'image');
-    return Response.json({ id: '99', attachments: [{ id: '100' }] });
+    assert.equal(options.body.get('files[1]').name, 'menu-30-2.png');
+    assert.equal(await options.body.get('files[1]').text(), 'second');
+    assert.equal(options.body.get('files[2]'), null);
+    return Response.json({ id: '99', attachments: [{ id: '100' }, { id: '101' }] });
   });
+  assert.equal(sends, 1);
+  await assert.rejects(sendImages(destination, post, [image, second], async () => Response.json({ id: '99', attachments: [{ id: '100' }] })), /전체 이미지 전송 확인/);
+  await assert.rejects(sendImages(destination, post, Array(11).fill(image)), /1~10장/);
+  await assert.rejects(sendImages(destination, post, [{ blob: { size: 25 * 1024 * 1024 } }]), /24 MiB/);
   const waits = [];
   let calls = 0;
   await request(destination, { method: 'POST' }, 'Discord 전송', async () => {

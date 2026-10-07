@@ -45,7 +45,7 @@ jobs:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
         run: npm start
 
-      # Preserve partial progress even when a later image failed to send.
+      # Preserve completed posts even when a later post failed to send.
       - name: Save delivery history
         if: ${{ always() && steps.history.outcome == 'success' && steps.send.outcome != 'skipped' }}
         shell: bash

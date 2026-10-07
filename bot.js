@@ -176,25 +176,32 @@ async function downloadImage(url, postUrl) {
   return { blob: new Blob(chunks, { type }), extension: IMAGE_TYPES.get(type) };
 }
 
-export async function sendImage(webhook, post, index, image, sendRequest = request) {
-  const filename = `menu-${post.id}-${index + 1}.${image.extension}`;
+export async function sendImages(webhook, post, images, sendRequest = request) {
+  if (!images.length || images.length > 10) throw new Error('한 메시지에는 이미지 1~10장을 첨부할 수 있습니다.');
+  // Leave room for multipart headers within Discord's 25 MiB request limit.
+  if (images.reduce((total, image) => total + image.blob.size, 0) > 24 * 1024 * 1024) {
+    throw new Error('이미지 합계가 24 MiB를 초과해 한 메시지로 전송할 수 없습니다.');
+  }
+  const attachments = images.map((image, index) => ({
+    id: index, filename: `menu-${post.id}-${index + 1}.${image.extension}`,
+  }));
   const form = new FormData();
   form.set('payload_json', JSON.stringify({
     username: '호야쿡스 식단 알림',
-    content: `🍽️ ${post.title.slice(0, 300)}\n식단표 ${index + 1}/${post.images.length}\n<${post.url}>`,
+    content: `🍽️ ${post.title.slice(0, 300)}\n식단표 ${images.length}장\n<${post.url}>`,
     allowed_mentions: { parse: [] },
-    attachments: [{ id: 0, filename }],
+    attachments,
   }));
-  form.set('files[0]', image.blob, filename);
+  images.forEach((image, index) => form.set(`files[${index}]`, image.blob, attachments[index].filename));
   const response = await sendRequest(webhook, { method: 'POST', body: form }, 'Discord 전송');
   const message = await response.json();
-  if (!message.id || !message.attachments?.length) throw new Error('Discord의 이미지 전송 확인을 받지 못했습니다.');
+  if (!message.id || message.attachments?.length !== images.length) throw new Error('Discord의 전체 이미지 전송 확인을 받지 못했습니다.');
 }
 
 export async function run({
   stateFile = resolve('data/state.json'), webhook, dryRun = false,
   getHtml = async (url) => (await request(url, {}, '게시판 조회')).text(),
-  getImage = downloadImage, send = sendImage, log = console.log,
+  getImage = downloadImage, send = sendImages, log = console.log,
 } = {}) {
   const destination = dryRun ? null : webhookUrl(webhook);
   let state = dryRun ? null : await readState(stateFile);
@@ -215,16 +222,20 @@ export async function run({
       state.pending = { postId: post.id, sentImages: [] };
       await saveState(stateFile, state);
     }
-    for (const [index, url] of post.images.entries()) {
-      if (!dryRun && state.pending.sentImages.includes(url)) continue;
+    // Honor any partial delivery history left by the previous image-per-message version.
+    const remaining = post.images.filter((url) => dryRun || !state.pending.sentImages.includes(url));
+    if (!dryRun && remaining.length > 10) throw new Error('이미지가 10장을 초과해 한 메시지로 전송할 수 없습니다.');
+    const images = [];
+    for (const [index, url] of remaining.entries()) {
       const image = await getImage(url, post.url);
       if (dryRun) { log(`  ${index + 1}. ${url} (${image.blob.size} bytes)`); continue; }
-      await send(destination, post, index, image);
-      state.pending.sentImages.push(url);
-      await saveState(stateFile, state);
-      log(`  이미지 ${index + 1}/${post.images.length} 전송 완료`);
+      images.push(image);
     }
     if (!dryRun) {
+      if (images.length) {
+        await send(destination, post, images);
+        log(`  이미지 ${images.length}장을 메시지 1개로 전송 완료`);
+      }
       state.lastPostId = post.id;
       state.pending = null;
       await saveState(stateFile, state);
