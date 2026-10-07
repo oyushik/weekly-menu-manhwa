@@ -25,6 +25,8 @@
 4. **Settings → Actions → General**에서 Actions 실행이 허용되어 있는지 확인합니다. 워크플로는 `contents: write`를 요청합니다. 조직 정책이나 브랜치 규칙이 있다면 `bot-state` 생성·푸시를 허용해야 전송 기록을 저장할 수 있습니다. 개인 액세스 토큰은 필요 없습니다.
 5. [Weekly menu to Discord 실행 화면](https://github.com/oyushik/weekly-menu-manhwa/actions/workflows/weekly-menu.yml)에서 **Run workflow**를 한 번 실행합니다. 최신 식단표가 Discord에 도착하고 **Save delivery history**가 성공했는지 확인합니다. 이후 예약 실행이 계속됩니다.
 
+이미 보낸 최신 식단표를 테스트로 다시 받으려면 **Run workflow**의 **최신 식단표를 테스트로 다시 보내기**를 체크하세요. 이 실행은 임시 기록을 사용하므로 정기 알림의 중복 방지 기록은 바뀌지 않습니다.
+
 이 폴더를 비어 있는 저장소에 처음 올릴 때는 아래 명령을 사용할 수 있습니다. 이미 업로드된 저장소에서는 다시 실행할 필요가 없습니다.
 
 ```powershell

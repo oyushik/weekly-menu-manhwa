@@ -4,6 +4,11 @@ on:
   schedule:
     - cron: '7,22,37,52 * * * *'
   workflow_dispatch:
+    inputs:
+      resend_latest:
+        description: '최신 식단표를 테스트로 다시 보내기 (기존 전송 기록 유지)'
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -43,11 +48,17 @@ jobs:
         id: send
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
-        run: npm start
+          RESEND_LATEST: ${{ inputs.resend_latest }}
+        shell: bash
+        run: |
+          if [[ "$RESEND_LATEST" == 'true' ]]; then
+            export STATE_FILE="$RUNNER_TEMP/weekly-menu-resend-state.json"
+          fi
+          npm start
 
       # Preserve completed posts even when a later post failed to send.
       - name: Save delivery history
-        if: ${{ always() && steps.history.outcome == 'success' && steps.send.outcome != 'skipped' }}
+        if: ${{ always() && !inputs.resend_latest && steps.history.outcome == 'success' && steps.send.outcome != 'skipped' }}
         shell: bash
         run: |
           if [[ ! -f "$STATE_FILE" ]]; then exit 0; fi
