@@ -1,0 +1,14 @@
+{
+  "name": "hoyacooks-weekly-menu-bot",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "한국만화영상진흥원 주간식단표를 Discord로 전달합니다.",
+  "engines": { "node": ">=24" },
+  "scripts": {
+    "start": "node --env-file-if-exists=.env bot.js",
+    "preview": "node bot.js --dry-run",
+    "test": "node --test"
+  },
+  "dependencies": { "cheerio": "1.2.0" }
+}
